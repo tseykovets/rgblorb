@@ -1,0 +1,1514 @@
+! vi: set ts=2 shiftwidth=2 expandtab:
+!
+! Copyright (c) 2003-2006  Simon Baldwin
+!
+!  This program is free software; you can redistribute it and/or modify
+!  it under the terms of the GNU General Public License as published by
+!  the Free Software Foundation; either version 2 of the License, or
+!  (at your option) any later version.
+!
+!  This program is distributed in the hope that it will be useful,
+!  but WITHOUT ANY WARRANTY; without even the implied warranty of
+!  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+!  GNU General Public License for more details.
+!
+!  See http://www.gnu.org/copyleft/gpl.html for the terms of the
+!  GNU General Public License.  If you don't have internet access, write to
+!  the Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+!  Boston, MA 02111, USA.
+!
+
+!
+! gblorb.inf -- simple file blorbifier/unblorbifier for Glulx
+!
+! This file requires something approaching the following compilation options:
+!
+!     $MAX_EXPRESSION_NODES=1000
+!     $MAX_STATIC_DATA=80000
+!
+
+! 2005/10/25 - Code style update, refactoring, and general tidy-up.
+!
+! 2006/03/01 - Updated for the Blorb 2.0 specification; added OGG file support,
+!              and a warning about SONG deprecation.
+
+Include "infglk.h";
+
+! Assorted global constants and "tunables".
+Constant MAX_TABLE_ENTRIES      1024;
+Constant FILENAME_LENGTH        40;
+Constant LINE_BUFFER_LENGTH     1024;
+Constant COPY_BUFFER_LENGTH     4096;
+Constant COMMAND_BUFFER_LENGTH  80;
+Constant SHORT_TIMEOUT          50;
+
+
+!-----------------------------------------------------------------------------
+! Resources table.
+!-----------------------------------------------------------------------------
+
+! A table entry contains the resource number, type, size, offset (if loaded
+! from Blorb, -1 otherwise), and 40-byte filename (38 chars bracketed with
+! $E0...0 as a Glulx C-string).
+Constant ENTRY_WORDS        4 + (FILENAME_LENGTH / WORDSIZE);
+Array  resources_table      --> ENTRY_WORDS * MAX_TABLE_ENTRIES;
+Global resources_count      = 0;
+
+[ add_table_entry resource type filesize offset filename
+  index byte_address i;
+
+  if (resources_count == MAX_TABLE_ENTRIES)
+    return;
+
+  index = resources_count * ENTRY_WORDS;
+  resources_table-->index++ = resource;
+  resources_table-->index++ = type;
+  resources_table-->index++ = filesize;
+  resources_table-->index++ = offset;
+
+  byte_address = resources_table + (index * WORDSIZE);
+
+  for (i = 0: i < FILENAME_LENGTH: i++)
+    byte_address->i = filename->i;
+
+  resources_count++;
+];
+
+[ get_table_resource entry;
+
+  return resources_table-->(entry * ENTRY_WORDS);
+];
+
+[ get_table_type entry;
+
+  return resources_table-->(entry * ENTRY_WORDS + 1);
+];
+
+[ get_table_filesize entry;
+
+  return resources_table-->(entry * ENTRY_WORDS + 2);
+];
+
+[ get_table_offset entry;
+
+  return resources_table-->(entry * ENTRY_WORDS + 3);
+];
+
+[ get_table_filename entry;
+
+  return resources_table + (entry * ENTRY_WORDS + 4) * WORDSIZE;
+];
+
+[ clear_table;
+
+  resources_count = 0;
+];
+
+[ get_table_length;
+
+  return resources_count;
+];
+
+[ get_table_capacity;
+
+  return MAX_TABLE_ENTRIES;
+];
+
+[ get_table_filename_length;
+
+  return FILENAME_LENGTH;
+];
+
+[ table_is_empty;
+
+  return resources_count == 0;
+];
+
+[ table_is_full;
+
+  return resources_count == MAX_TABLE_ENTRIES;
+];
+
+[ get_table_start;
+
+  return 0;
+];
+
+[ more_table_entries entry;
+
+  return entry >= 0 && entry < resources_count;
+];
+
+[ next_table_entry entry;
+
+  return entry + 1;
+];
+
+
+!-----------------------------------------------------------------------------
+! Miscellaneous utilities.
+!-----------------------------------------------------------------------------
+
+Array union --> 1;
+[ get_uint_stream stream;
+
+  0->union = glk_get_char_stream (stream);
+  1->union = glk_get_char_stream (stream);
+  2->union = glk_get_char_stream (stream);
+  3->union = glk_get_char_stream (stream);
+  return union-->0;
+];
+[ put_uint_stream stream num;
+
+  union-->0 = num;
+  glk_put_char_stream (stream, 0->union);
+  glk_put_char_stream (stream, 1->union);
+  glk_put_char_stream (stream, 2->union);
+  glk_put_char_stream (stream, 3->union);
+];
+
+Array flush_event --> 4;
+[ force_flush;
+
+  if (glk_gestalt (gestalt_Timer))
+    {
+      glk_request_timer_events (SHORT_TIMEOUT);
+      do
+        {
+          glk_select (flush_event);
+        }
+      until (flush_event-->0 == evtype_Timer);
+    }
+];
+
+
+!-----------------------------------------------------------------------------
+! Resource file type autodetection.
+!-----------------------------------------------------------------------------
+
+Constant FILEREF_ERROR     -3;
+Constant STREAM_ERROR      -2;
+Constant UNKNOWN_RESOURCE  -1;
+
+Constant JPEG_RESOURCE      0;
+Constant PNG_RESOURCE       1;
+Constant AIFF_RESOURCE      2;
+Constant MOD_RESOURCE       3;
+Constant SONG_RESOURCE      4;
+Constant OGG_RESOURCE       5;
+Constant GLUL_RESOURCE      6;
+Constant TADG_RESOURCE      7;
+Constant MSRL_RESOURCE      8;
+Constant ZCOD_RESOURCE      9;
+Constant HUGO_RESOURCE     10;
+Constant ALAN_RESOURCE     11;
+Constant SAAI_RESOURCE     12;
+
+Global filesize            = 0;
+
+Array magic                -> 64;
+Array magic2               -> 4;
+[ autodetect_filetype filename
+  i fileref stream;
+
+  fileref = glk_fileref_create_by_name (fileusage_BinaryMode|fileusage_Data,
+                                        filename, 0);
+  if (fileref == GLK_NULL)
+    return FILEREF_ERROR;
+  stream = glk_stream_open_file (fileref, filemode_Read, 0);
+  glk_fileref_destroy (fileref);
+  if (stream == GLK_NULL)
+    return STREAM_ERROR;
+
+  for (i = 0: i < 64: i++)  magic->i  = 0;
+  for (i = 0: i < 4: i++)   magic2->i = 0;
+
+  glk_get_buffer_stream (stream, magic, 64);
+  glk_stream_set_position (stream, 1080, seekmode_Start);
+  if (glk_stream_get_position (stream) == 1080)
+    glk_get_buffer_stream (stream, magic2, 4);
+
+  glk_stream_set_position (stream, 0, seekmode_End);
+  filesize = glk_stream_get_position (stream);
+
+  glk_stream_close (stream, GLK_NULL);
+
+  if (magic->0 == $FF && magic->1 == $D8
+      && magic->6 == 'J' && magic->7 == 'F'
+      && magic->8 == 'I' && magic->9 == 'F')
+    return JPEG_RESOURCE;
+
+  if (magic->0 == $89 && magic->1 == 'P'
+      && magic->2 == 'N' && magic->3 == 'G'
+      && magic->4 == $0D && magic->5 == $0A
+      && magic->6 == $1A && magic->7 == $0A)
+    return PNG_RESOURCE;
+
+  if (magic->0 == 'F' && magic->1 == 'O'
+      && magic->2 == 'R' && magic->3 == 'M'
+      && magic->8 == 'A' && magic->9 == 'I'
+      && magic->10 == 'F' && magic->11 == 'F')
+    return AIFF_RESOURCE;
+  if (magic->0 == 'A' && magic->1 == 'I'
+      && magic->2 == 'F' && magic->3 == 'F')
+    return AIFF_RESOURCE;
+
+  if (magic2->0 == 'M' && magic2->1 == '.' or '!'
+      && magic2->2 == 'K' && magic2->3 == '.' or '!')
+    {
+      if (magic->20 == 'S' && magic->21 == 'N' && magic->22 == 'D')
+        return SONG_RESOURCE;
+      else
+        return MOD_RESOURCE;
+    }
+
+  if (magic->0 == 'O' && magic->1 == 'g'
+      && magic->2 == 'g' && magic->3 == 'S')
+    return OGG_RESOURCE;
+
+  if (magic->0 == 'G' && magic->1 == 'l'
+      && magic->2 == 'u' && magic->3 == 'l')
+    return GLUL_RESOURCE;
+
+  if (magic->0 == 'T' && magic->1 == 'A'
+      && magic->2 == 'D' && magic->3 == 'S'
+      && magic->4 == '2' && magic->5 == ' '
+      && magic->6 == 'b' && magic->7 == 'i'
+      && magic->8 == 'n' && magic->9 == $0A
+      && magic->10 == $0D && magic->11 == $1A
+      && magic->12 == $00 && magic->13 == $76)
+    return TADG_RESOURCE;
+
+  if (magic->0 == 'M' && magic->1 == 'a'
+      && magic->2 == 'S' && magic->3 == 'c')
+    return MSRL_RESOURCE;
+
+  if (magic->0 >= 0 && magic->0 <= 8
+      && magic->18 >= '0' && magic->18 <= '9'
+      && magic->19 >= '0' && magic->19 <= '9'
+      && magic->20 >= '0' && magic->20 <= '9'
+      && magic->21 >= '0' && magic->21 <= '9'
+      && magic->22 >= '0' && magic->22 <= '9'
+      && magic->23 >= '0' && magic->23 <= '9')
+    return ZCOD_RESOURCE;
+
+  if (magic->3 >= '0' && magic->3 <= '9'
+      && magic->4 >= '0' && magic->4 <= '9'
+      && magic->5 == '-'
+      && magic->6 >= '0' && magic->6 <= '9'
+      && magic->7 >= '0' && magic->7 <= '9'
+      && magic->8 == '-'
+      && magic->9 >= '0' && magic->9 <= '9'
+      && magic->10 >= '0' && magic->10 <= '9'
+      && magic->49 == $00 && magic->50 == $00
+      && magic->51 == $00 && magic->52 == $00
+      && magic->53 == $00 && magic->54 == $00
+      && magic->55 == $00 && magic->56 == $00)
+    return HUGO_RESOURCE;
+
+  if (magic->0 >= $02
+      && magic->1 >= $00 && magic->1 <= $09
+      && magic->2 >= $00 && magic->2 <= $09
+      && magic->3 >= $00 && magic->3 <= $09
+      && magic->8 == $00 && magic->9 == $00
+      && magic->10 == $00
+      && magic->11 == $00 or $01
+      && magic->20 == $00 && magic->21 == $00
+      && magic->22 == $00 && magic->23 == $00 or $01)
+    return ALAN_RESOURCE;
+
+  return UNKNOWN_RESOURCE;
+];
+
+[ get_autodetect_filesize;
+
+  return filesize;
+];
+
+
+!-----------------------------------------------------------------------------
+! Resource categorization.
+!-----------------------------------------------------------------------------
+
+Constant UNKNOWN_CATEGORY  -1;
+
+Constant EXEC_CATEGORY      0;
+Constant PICT_CATEGORY      1;
+Constant SND_CATEGORY       2;
+
+[ resource_category type;
+
+  switch (type)
+    {
+    JPEG_RESOURCE, PNG_RESOURCE:
+      return PICT_CATEGORY;
+    AIFF_RESOURCE, MOD_RESOURCE, SONG_RESOURCE, OGG_RESOURCE:
+      return SND_CATEGORY;
+    GLUL_RESOURCE, TADG_RESOURCE, MSRL_RESOURCE, ZCOD_RESOURCE, HUGO_RESOURCE,
+    ALAN_RESOURCE, SAAI_RESOURCE:
+      return EXEC_CATEGORY;
+    }
+
+  return UNKNOWN_CATEGORY;
+];
+
+
+!-----------------------------------------------------------------------------
+! Specification file parsing.
+!-----------------------------------------------------------------------------
+
+[ read_spec_resource buf len
+  i resource;
+
+  i = 0;
+  while (i < len && buf->i == ' ' or 9) i++;
+  if (i == len)
+    return -1;
+
+  resource = -1;
+  while (i < len && buf->i >= '0' && buf->i <= '9')
+    {
+      if (resource == -1)
+        resource = 0;
+      resource = resource * 10 + buf->i - '0';
+      i++;
+    }
+  if (i < len && buf->i ~= ' ' or 9)
+    return -1;
+
+  return resource;
+];
+
+[ read_spec_filename buf len filename
+  i j;
+
+  i = 0;
+  while (i < len && buf->i == ' ' or 9) i++;
+  if (i == len)
+    return false;
+  while (i < len && buf->i >= '0' && buf->i <= '9') i++;
+  if (i == len)
+    return false;
+  while (i < len && buf->i == ' ' or 9) i++;
+  if (i == len)
+    return false;
+
+  j = 0;
+  filename->j++ = $E0;
+  while (i < len && j < get_table_filename_length () - 2)
+    filename->j++ = buf->i++;
+  if (j == get_table_filename_length () - 2 && i < len)
+    return false;
+  filename->j++ = 0;
+
+  return true;
+];
+
+[ line_error msg linenum line len;
+
+  print "    Error: ", (string) msg, ", at line ", linenum, ": ";
+  glk_put_buffer (line, len);
+  print "^";
+];
+
+Array spec_line      -> LINE_BUFFER_LENGTH;
+Array spec_filename  -> FILENAME_LENGTH;
+[ load_spec stream
+  len line linenum i resource category type size status errors;
+
+  print "Loading the resources table from a specification file...^";
+  force_flush ();
+
+  linenum = 0;
+  errors = 0;
+
+  clear_table ();
+
+  line = spec_line;
+  for (len = glk_get_line_stream (stream, line, LINE_BUFFER_LENGTH):
+       len > 0: len = glk_get_line_stream (stream, line, LINE_BUFFER_LENGTH))
+    {
+      linenum++;
+
+      if (line->0 == '#' or '!')
+        continue;
+      while (len > 0 && line->(len - 1) == 13 or 10 or ' ' or 9)
+        len--;
+      if (len == 0)
+        continue;
+
+      for (i = 0: i < len: i++) if (line->i == 9) line->i = ' ';
+
+      resource = read_spec_resource (line, len);
+      if (resource == -1)
+        {
+          line_error ("invalid or missing resource", linenum, line, len);
+          errors++;
+          continue;
+        }
+
+      status = read_spec_filename (line, len, spec_filename);
+      if (~~status)
+        {
+          line_error ("invalid or missing filename", linenum, line, len);
+          errors++;
+          continue;
+        }
+
+      type = autodetect_filetype (spec_filename);
+      if (type < 0)
+        {
+          switch (type)
+            {
+            FILEREF_ERROR:
+              line_error ("unable to access file", linenum, line, len);
+            STREAM_ERROR:
+              line_error ("unable to open file",  linenum, line, len);
+            UNKNOWN_RESOURCE:
+              line_error ("file is unknown type",  linenum, line, len);
+            }
+          errors++;
+          continue;
+      }
+
+      category = resource_category (type);
+      for (i = get_table_start (): more_table_entries (i):
+           i = next_table_entry (i))
+        {
+          if (category == resource_category (get_table_type (i))
+              && resource == get_table_resource (i))
+            {
+              line_error ("resource already used", linenum, line, len);
+              errors++;
+              break;
+            }
+        }
+      if (more_table_entries (i))
+        continue;
+
+      if (table_is_full ())
+        {
+          line_error ("resource table is full", linenum, line, len);
+          errors++;
+          break;
+        }
+
+      size = get_autodetect_filesize ();
+      add_table_entry (resource, type, size, -1, spec_filename);
+    }
+
+  if (table_is_empty ())
+    print "No resources were loaded into the table.";
+  else if (get_table_length () == 1)
+    print "Successfully loaded 1 resource into the table.";
+  else
+    print "Successfully loaded ", get_table_length (),
+          " resources into the table.";
+
+  if (errors == 1)
+    print "  There were errors in 1 entry.";
+  else if (errors > 1)
+    print "  There were errors in ", errors, " entries.";
+  print "^^";
+
+  return ~~table_is_empty ();
+];
+
+
+!-----------------------------------------------------------------------------
+! Blorb file handling.
+!-----------------------------------------------------------------------------
+
+Array blorb_form  -> $E0 'F''O''R''M' 0;
+Array blorb_ifrs  -> $E0 'I''F''R''S' 0;
+Array blorb_ridx  -> $E0 'R''I''d''x' 0;
+Array blorb_pict  -> $E0 'P''i''c''t' 0;
+Array blorb_snd   -> $E0 'S''n''d'' ' 0;
+Array blorb_exec  -> $E0 'E''x''e''c' 0;
+
+Array blorb_glul  -> $E0 'G''L''U''L' 0;
+Array blorb_tadg  -> $E0 'T''A''D''G' 0;
+Array blorb_msrl  -> $E0 'M''S''R''L' 0;
+Array blorb_zcod  -> $E0 'Z''C''O''D' 0;
+Array blorb_hugo  -> $E0 'H''U''G''O' 0;
+Array blorb_alan  -> $E0 'A''L''A''N' 0;
+Array blorb_saai  -> $E0 'S''A''A''I' 0;
+Array blorb_jpeg  -> $E0 'J''P''E''G' 0;
+Array blorb_png   -> $E0 'P''N''G'' ' 0;
+Array blorb_aiff  -> $E0 'F''O''R''M' 0;
+Array blorb_mod   -> $E0 'M''O''D'' ' 0;
+Array blorb_song  -> $E0 'S''O''N''G' 0;
+Array blorb_ogg   -> $E0 'O''G''G''V' 0;
+
+[ identify_blorbtype type;
+
+  if (type->0 == blorb_glul->1 && type->1 == blorb_glul->2
+      && type->2 == blorb_glul->3 && type->3 == blorb_glul->4)
+    return GLUL_RESOURCE;
+
+  if (type->0 == blorb_tadg->1 && type->1 == blorb_tadg->2
+      && type->2 == blorb_tadg->3 && type->3 == blorb_tadg->4)
+    return TADG_RESOURCE;
+
+  if (type->0 == blorb_msrl->1 && type->1 == blorb_msrl->2
+      && type->2 == blorb_msrl->3 && type->3 == blorb_msrl->4)
+    return MSRL_RESOURCE;
+
+  if (type->0 == blorb_zcod->1 && type->1 == blorb_zcod->2
+      && type->2 == blorb_zcod->3 && type->3 == blorb_zcod->4)
+    return ZCOD_RESOURCE;
+
+  if (type->0 == blorb_hugo->1 && type->1 == blorb_hugo->2
+      && type->2 == blorb_hugo->3 && type->3 == blorb_hugo->4)
+    return HUGO_RESOURCE;
+
+  if (type->0 == blorb_alan->1 && type->1 == blorb_alan->2
+      && type->2 == blorb_alan->3 && type->3 == blorb_alan->4)
+    return ALAN_RESOURCE;
+
+  if (type->0 == blorb_saai->1 && type->1 == blorb_saai->2
+      && type->2 == blorb_saai->3 && type->3 == blorb_saai->4)
+    return SAAI_RESOURCE;
+
+  if (type->0 == blorb_jpeg->1 && type->1 == blorb_jpeg->2
+      && type->2 == blorb_jpeg->3 && type->3 == blorb_jpeg->4)
+    return JPEG_RESOURCE;
+
+  if (type->0 == blorb_png->1 && type->1 == blorb_png->2
+      && type->2 == blorb_png->3 && type->3 == blorb_png->4)
+    return PNG_RESOURCE;
+
+  if (type->0 == blorb_aiff->1 && type->1 == blorb_aiff->2
+      && type->2 == blorb_aiff->3 && type->3 == blorb_aiff->4)
+    return AIFF_RESOURCE;
+
+  if (type->0 == blorb_mod->1 && type->1 == blorb_mod->2
+      && type->2 == blorb_mod->3 && type->3 == blorb_mod->4)
+    return MOD_RESOURCE;
+
+  if (type->0 == blorb_song->1 && type->1 == blorb_song->2
+      && type->2 == blorb_song->3 && type->3 == blorb_song->4)
+    return SONG_RESOURCE;
+
+  if (type->0 == blorb_ogg->1 && type->1 == blorb_ogg->2
+      && type->2 == blorb_ogg->3 && type->3 == blorb_ogg->4)
+    return OGG_RESOURCE;
+
+  return UNKNOWN_RESOURCE;
+];
+
+Array numbuf  -> 10;
+[ invent_filename type resource filename
+  i j;
+
+  i = 0;
+  filename->i++ = $E0;
+
+  switch (resource_category (type))
+    {
+    PICT_CATEGORY:
+      filename->i++ = 'P'; filename->i++ = 'I'; filename->i++ = 'C';
+    SND_CATEGORY:
+      filename->i++ = 'S'; filename->i++ = 'N'; filename->i++ = 'D';
+    EXEC_CATEGORY:
+      filename->i++ = 'S'; filename->i++ = 'T'; filename->i++ = 'O';
+      filename->i++ = 'R'; filename->i++ = 'Y';
+    default:
+      filename->i++ = 'U'; filename->i++ = 'N'; filename->i++ = 'K';
+    }
+
+  j = 0;
+  while (resource > 0)
+    {
+      numbuf->j++ = resource % 10 + '0';
+      resource = resource / 10;
+    }
+  if (j == 0)
+    numbuf->j++ = '0';
+  while (j > 0)
+    {
+      j--;
+      filename->i++ = numbuf->j;
+    }
+
+  filename->i = 0;
+];
+
+Array ridxcheck       -> 4;
+Array blorb_type      -> 4;
+Array blorb_filename  -> FILENAME_LENGTH;
+[ load_blorb stream
+  offset entries entry resource position type size;
+
+  print "Loading the resources table from a Blorb file...^";
+  force_flush ();
+
+  offset = 12;
+  glk_stream_set_position (stream, offset, seekmode_Start);
+  if (glk_stream_get_position (stream) ~= offset)
+    {
+      print "    Error: can't read resources count.^";
+      return false;
+    }
+
+  glk_get_buffer_stream (stream, ridxcheck, 4);
+  if (ridxcheck->0 ~= blorb_ridx->1 && ridxcheck->1 ~= blorb_ridx->2
+      && ridxcheck->2 ~= blorb_ridx->3 && ridxcheck->3 ~= blorb_ridx->4)
+    {
+      print "    Error: can't find resources index.^";
+      return false;
+    }
+
+  offset = glk_stream_get_position (stream) + 4;
+  glk_stream_set_position (stream, offset, seekmode_Start);
+  if (glk_stream_get_position (stream) ~= offset)
+    {
+      print "    Error: can't read resources count.^";
+      return false;
+    }
+
+  entries = get_uint_stream (stream);
+  if (entries > get_table_capacity ())
+    {
+      print "    Error: resource table is too short, handling only the first ",
+            get_table_capacity (), " resources.^";
+      entries = get_table_capacity ();
+    }
+
+  clear_table ();
+
+  for (entry = 0: entry < entries: entry++)
+    {
+      offset = 12 + 12 + entry * 12 + 4;
+      glk_stream_set_position (stream, offset, seekmode_Start);
+      if (glk_stream_get_position (stream) ~= offset)
+        {
+          print "    Error: can't locate resource ", entry, " index entry.^";
+          return false;
+        }
+
+      resource = get_uint_stream (stream);
+      position = get_uint_stream (stream);
+
+      offset = position;
+      glk_stream_set_position (stream, offset, seekmode_Start);
+      if (glk_stream_get_position (stream) ~= offset)
+        {
+          print "    Error: can't locate resource ", entry, " data.^";
+          return false;
+        }
+
+      blorb_type->0 = glk_get_char_stream (stream);
+      blorb_type->1 = glk_get_char_stream (stream);
+      blorb_type->2 = glk_get_char_stream (stream);
+      blorb_type->3 = glk_get_char_stream (stream);
+      type = identify_blorbtype (blorb_type);
+      size = get_uint_stream (stream);
+
+      invent_filename (type, resource, blorb_filename);
+
+      add_table_entry (resource, type, size, position, blorb_filename);
+    }
+
+  if (table_is_empty ())
+    print "No resources were loaded into the table.^^";
+  else if (get_table_length () == 1)
+    print "Successfully loaded 1 resource into the table.^^";
+  else
+    print "Successfully loaded ", get_table_length (),
+          " resources into the table.^^";
+
+  return true;
+];
+
+
+!-----------------------------------------------------------------------------
+! User command handlers.
+!-----------------------------------------------------------------------------
+
+Global blorb_fileref  = GLK_NULL;
+
+Array typecheck       -> 12;
+[ load
+  fileref clone stream len status;
+
+  fileref = glk_fileref_create_by_prompt (fileusage_BinaryMode|fileusage_Data,
+                                          filemode_Read, 0);
+  if (fileref == GLK_NULL)
+    {
+      print "Not a valid file reference, sorry.^^";
+      return false;
+    }
+  stream = glk_stream_open_file (fileref, filemode_Read, 0);
+  if (stream == GLK_NULL)
+    {
+      glk_fileref_destroy (fileref);
+      print "Couldn't open this file, sorry.^^";
+      return false;
+    }
+
+  len = glk_get_buffer_stream (stream, typecheck, 12);
+  if (len == 12 && typecheck->0 == blorb_form->1
+      && typecheck->1 == blorb_form->2 && typecheck->2 == blorb_form->3
+      && typecheck->3 == blorb_form->4 && typecheck->8 == blorb_ifrs->1
+      && typecheck->9 == blorb_ifrs->2 && typecheck->10 == blorb_ifrs->3
+      && typecheck->11 == blorb_ifrs->4)
+    {
+      status = load_blorb (stream);
+      if (status)
+        {
+          if (blorb_fileref ~= GLK_NULL)
+            glk_fileref_destroy (blorb_fileref);
+          blorb_fileref = fileref;
+        }
+    }
+  else
+    {
+      glk_stream_close (stream, GLK_NULL);
+      clone = glk_fileref_create_from_fileref
+                                  (fileusage_TextMode|fileusage_Data,
+                                   fileref, 0);
+      glk_fileref_destroy (fileref);
+      stream = glk_stream_open_file (clone, filemode_Read, 0);
+      glk_fileref_destroy (clone);
+      if (stream == GLK_NULL)
+        {
+          print "Couldn't open this file, sorry.^^";
+          return false;
+        }
+
+      status = load_spec (stream);
+      if (status)
+        {
+          if (blorb_fileref ~= GLK_NULL)
+            glk_fileref_destroy (blorb_fileref);
+          blorb_fileref = GLK_NULL;
+        }
+    }
+
+  glk_stream_close (stream, GLK_NULL);
+
+  return status;
+];
+
+[ check
+  entry type resource stories sresource zcode sndwarn has_song has_ogg;
+
+  if (table_is_empty ())
+    return;
+
+  stories = 0;
+  sndwarn = false;
+  zcode = false;
+  has_song = false;
+  has_ogg = false;
+
+  for (entry = get_table_start (): more_table_entries (entry):
+       entry = next_table_entry (entry))
+    {
+      type = get_table_type (entry);
+      resource = get_table_resource (entry);
+
+      switch (resource_category (type))
+        {
+        EXEC_CATEGORY:
+          stories++;
+          sresource = resource;
+          if (type == ZCOD_RESOURCE)
+            zcode = true;
+        SND_CATEGORY:
+          if (resource == 1 or 2)
+            sndwarn = true;
+          if (type == SONG_RESOURCE)
+            has_song = true;
+          else if (type == OGG_RESOURCE)
+            has_ogg = true;
+        }
+    }
+
+  if (stories == 0)
+    print "Warning: the table contains no executable game file.^^";
+  else if (stories > 1)
+    print "Warning: the table contains more than one executable game file.^^";
+  else if (stories == 1 && sresource ~= 0)
+    print "Warning: the executable game file must have resource number zero.^^";
+
+  if (zcode && sndwarn)
+    print "Warning: sound resources 1 and 2 are usually avoided for Z-Machine
+          games.^^";
+
+  if (has_song)
+    print "Warning: SONG sound resources are deprecated in Blorb 2.0.^^";
+  if (has_ogg)
+    print "Warning: OGG sound resources require Blorb 2.0 support.^^";
+];
+
+[ list
+  entry resource type size;
+
+  if (table_is_empty ())
+    {
+      print "The resources table is empty.^^";
+      return true;
+    }
+
+  print "The resources table contains the following entries:^^";
+  font off;
+  print "  Usage  Resource  Type     Length  Filename^";
+  print "  -----  --------  ----     ------  --------^";
+  for (entry = get_table_start (): more_table_entries (entry):
+       entry = next_table_entry (entry))
+    {
+      print "  ";
+
+      type = get_table_type (entry);
+      switch (resource_category (type))
+        {
+        EXEC_CATEGORY: print "EXEC";
+        PICT_CATEGORY: print "PICT";
+        SND_CATEGORY:  print "SND ";
+        default:       print "UNKN";
+        }
+      print " ";
+
+      resource = get_table_resource (entry);
+      if (resource < 10)              print "         ";
+      else if (resource < 100)        print "        ";
+      else if (resource < 1000)       print "       ";
+      else if (resource < 10000)      print "      ";
+      else if (resource < 100000)     print "     ";
+      else if (resource < 1000000)    print "    ";
+      else if (resource < 10000000)   print "   ";
+      else if (resource < 100000000)  print "  ";
+      else if (resource < 1000000000) print " ";
+      print resource, "  ";
+
+      switch (type)
+        {
+        JPEG_RESOURCE: print "JPEG";
+        PNG_RESOURCE:  print "PNG ";
+        AIFF_RESOURCE: print "AIFF";
+        MOD_RESOURCE:  print "MOD ";
+        SONG_RESOURCE: print "SONG";
+        OGG_RESOURCE:  print "OGG ";
+        GLUL_RESOURCE: print "GLUL";
+        TADG_RESOURCE: print "TADG";
+        MSRL_RESOURCE: print "MSRL";
+        ZCOD_RESOURCE: print "ZCOD";
+        HUGO_RESOURCE: print "HUGO";
+        ALAN_RESOURCE: print "ALAN";
+        SAAI_RESOURCE: print "SAAI";
+        default:       print "UNKN";
+        }
+      print " ";
+
+      size = get_table_filesize (entry);
+      if (size < 10)              print "         ";
+      else if (size < 100)        print "        ";
+      else if (size < 1000)       print "       ";
+      else if (size < 10000)      print "      ";
+      else if (size < 100000)     print "     ";
+      else if (size < 1000000)    print "    ";
+      else if (size < 10000000)   print "   ";
+      else if (size < 100000000)  print "  ";
+      else if (size < 1000000000) print " ";
+      print size, "  ";
+
+      glk_put_string (get_table_filename (entry));
+
+      print "^";
+    }
+  font on;
+
+  print "^";
+
+  return true;
+];
+
+Array copy_buffer  -> COPY_BUFFER_LENGTH;
+[ archive_file to_stream filename
+  fileref stream len bytes;
+
+  fileref = glk_fileref_create_by_name (fileusage_BinaryMode|fileusage_Data,
+                                        filename, 0);
+  if (fileref == GLK_NULL)
+    return -1;
+  stream = glk_stream_open_file (fileref, filemode_Read, 0);
+  glk_fileref_destroy (fileref);
+  if (stream == GLK_NULL)
+    return -1;
+
+  bytes = 0;
+  len = glk_get_buffer_stream (stream, copy_buffer, COPY_BUFFER_LENGTH);
+  while (len > 0)
+    {
+      glk_put_buffer_stream (to_stream, copy_buffer, len);
+      bytes = bytes + len;
+
+      len = glk_get_buffer_stream (stream, copy_buffer, COPY_BUFFER_LENGTH);
+    }
+
+  glk_stream_close (stream, GLK_NULL);
+  return bytes;
+];
+
+[ extract_file from_stream offset size filename
+  fileref stream len remaining bytes;
+
+  fileref = glk_fileref_create_by_name (fileusage_BinaryMode|fileusage_Data,
+                                        filename, 0);
+  if (fileref == GLK_NULL)
+    return -1;
+  stream = glk_stream_open_file (fileref, filemode_Write, 0);
+  glk_fileref_destroy (fileref);
+  if (stream == GLK_NULL)
+    return -1;
+
+  glk_stream_set_position (from_stream, offset, seekmode_Start);
+  if (glk_stream_get_position (from_stream) ~= offset)
+    return -1;
+
+  if (size == 0)
+    return 0;
+
+  remaining = size;
+  do
+    {
+      if (remaining > COPY_BUFFER_LENGTH)
+        bytes = COPY_BUFFER_LENGTH;
+      else
+        bytes = remaining;
+      len = glk_get_buffer_stream (from_stream, copy_buffer, bytes);
+
+      glk_put_buffer_stream (stream, copy_buffer, len);
+      remaining = remaining - len;
+    }
+  until (remaining == 0);
+
+  glk_stream_close (stream, GLK_NULL);
+  return size;
+];
+
+[ build
+  fileref stream entry offset total size length filename;
+
+  if (table_is_empty ())
+    {
+      print "The resources table is empty.^^";
+      return false;
+    }
+  if (blorb_fileref ~= GLK_NULL)
+    {
+      print "The resources table was created by reading in a Blorb file. You
+             can only create new Blorb files when the resources table is read
+             from a specification file.^^";
+      return false;
+    }
+
+  fileref = glk_fileref_create_by_prompt (fileusage_BinaryMode|fileusage_Data,
+                                          filemode_Write, 0);
+  if (fileref == GLK_NULL)
+    {
+      print "Not a valid file reference, sorry.^^";
+      return false;
+    }
+  stream = glk_stream_open_file (fileref, filemode_Write, 0);
+  glk_fileref_destroy (fileref);
+  if (stream == GLK_NULL)
+    {
+      print "Couldn't open the Blorb file, sorry.^^";
+      return false;
+    }
+
+  print "Writing the Blorb output file...^";
+  force_flush ();
+
+  total = 0;
+  for (entry = get_table_start (): more_table_entries (entry):
+       entry = next_table_entry (entry))
+    {
+      size = get_table_filesize (entry);
+      total = total + 8 + size + size % 2;
+    }
+
+  glk_put_string_stream (stream, blorb_form);
+  put_uint_stream (stream, 4 + 12 + get_table_length () * 12 + total);
+  glk_put_string_stream (stream, blorb_ifrs);
+
+  glk_put_string_stream (stream, blorb_ridx);
+  put_uint_stream (stream, 4 + get_table_length () * 12);
+  put_uint_stream (stream, get_table_length ());
+
+  offset = 12 + 12 + get_table_length () * 12;
+  for (entry = get_table_start (): more_table_entries (entry):
+       entry = next_table_entry (entry))
+    {
+      switch (resource_category (get_table_type (entry)))
+        {
+        PICT_CATEGORY: glk_put_string_stream (stream, blorb_pict);
+        SND_CATEGORY:  glk_put_string_stream (stream, blorb_snd);
+        EXEC_CATEGORY: glk_put_string_stream (stream, blorb_exec);
+        default:
+          print "FATAL: unexpected resource type.^";
+          break;
+        }
+
+      put_uint_stream (stream, get_table_resource (entry));
+
+      put_uint_stream (stream, offset);
+      size = get_table_filesize (entry);
+      offset = offset + 8 + size + size % 2;
+    }
+
+  for (entry = get_table_start (): more_table_entries (entry):
+       entry = next_table_entry (entry))
+    {
+      switch (get_table_type (entry))
+        {
+        JPEG_RESOURCE: glk_put_string_stream (stream, blorb_jpeg);
+        PNG_RESOURCE:  glk_put_string_stream (stream, blorb_png);
+
+        AIFF_RESOURCE: glk_put_string_stream (stream, blorb_aiff);
+        MOD_RESOURCE:  glk_put_string_stream (stream, blorb_mod);
+        SONG_RESOURCE: glk_put_string_stream (stream, blorb_song);
+        OGG_RESOURCE:  glk_put_string_stream (stream, blorb_ogg);
+
+        GLUL_RESOURCE: glk_put_string_stream (stream, blorb_glul);
+        TADG_RESOURCE: glk_put_string_stream (stream, blorb_tadg);
+        MSRL_RESOURCE: glk_put_string_stream (stream, blorb_msrl);
+        ZCOD_RESOURCE: glk_put_string_stream (stream, blorb_zcod);
+        HUGO_RESOURCE: glk_put_string_stream (stream, blorb_hugo);
+        ALAN_RESOURCE: glk_put_string_stream (stream, blorb_alan);
+        SAAI_RESOURCE: glk_put_string_stream (stream, blorb_saai);
+
+        default:
+          print "FATAL: unexpected resource type.^";
+          break;
+        }
+
+      size = get_table_filesize (entry);
+      put_uint_stream (stream, size);
+
+      filename = get_table_filename (entry);
+      length = archive_file (stream, filename);
+      if (length == -1)
+        {
+          print "FATAL: error opening file ";
+          glk_put_string (filename);
+          print ", Blorb output file will be corrupt.^";
+        }
+
+      if (size % 2)
+        glk_put_char_stream (stream, 0);
+    }
+
+  total = glk_stream_get_position (stream);
+  glk_stream_close (stream, GLK_NULL);
+
+  print "Successfully wrote ", total, " bytes to the output Blorb file.^^";
+  return true;
+];
+
+Array specname  -> $E0 'S''P''E''C' 0;
+
+Array resbuf    -> 10;
+[ save_spec
+  fileref stream entry resource i;
+
+  fileref = glk_fileref_create_by_name (fileusage_BinaryMode|fileusage_Data,
+                                        specname, 0);
+  if (fileref == GLK_NULL)
+    return false;
+  stream = glk_stream_open_file (fileref, filemode_Write, 0);
+  glk_fileref_destroy (fileref);
+  if (stream == GLK_NULL)
+    return false;
+
+  for (entry = get_table_start (): more_table_entries (entry):
+       entry = next_table_entry (entry))
+    {
+      resource = get_table_resource (entry);
+
+      i = 0;
+      while (resource > 0)
+        {
+          resbuf->i++ = resource % 10 + '0';
+          resource = resource / 10;
+        }
+      if (i == 0)
+        resbuf->i++ = '0';
+      while (i > 0)
+        {
+          i--;
+          glk_put_char_stream (stream, resbuf->i);
+        }
+
+      glk_put_char_stream (stream, 9);
+      glk_put_string_stream (stream, get_table_filename (entry));
+      glk_put_char_stream (stream, 10);
+    }
+
+  glk_stream_close (stream, GLK_NULL);
+
+  return true;
+];
+
+[ extract
+  stream entry position size filename length count status;
+
+  if (table_is_empty ())
+    {
+      print "The resources table is empty.^^";
+      return false;
+    }
+  if (blorb_fileref == GLK_NULL)
+    {
+      print "The resources table was created by reading in a specification file.
+             You can only extract resources from a Blorb file when the
+             resources table is read from that file.^^";
+      return false;
+    }
+
+  stream = glk_stream_open_file (blorb_fileref, filemode_Read, 0);
+  if (stream == GLK_NULL)
+    {
+      print "Couldn't open the Blorb file, sorry.^^";
+      return false;
+    }
+
+  print "Extracting resources from the Blorb output file...^";
+  force_flush ();
+
+  count = 0;
+  for (entry = get_table_start (): more_table_entries (entry):
+       entry = next_table_entry (entry))
+    {
+      position = get_table_offset (entry);
+      size = get_table_filesize (entry);
+      filename = get_table_filename (entry);
+
+      length = extract_file (stream, position + 8, size, filename);
+      if (length == -1)
+        {
+          print "    Error: can't open or write to file ";
+          glk_put_string_stream (filename);
+          print "^";
+          continue;
+        }
+
+      count++;
+    }
+
+  glk_stream_close (stream, GLK_NULL);
+
+  status = save_spec ();
+
+  if (count == 1)
+    print "Successfully created 1 resource file";
+  else
+    print "Successfully created ", count, " resource files";
+
+  if (status)
+    print ", and a specification file";
+
+  print ".^^";
+
+  return true;
+];
+
+
+!-----------------------------------------------------------------------------
+! Assorted informational texts.
+!-----------------------------------------------------------------------------
+
+[ help;
+  print "Gblorb understands the following commands:^^";
+  font off; print "    load    "; font on;
+  print "- Load a specification file or a Blorb file into Gblorb's
+         resource tables^";
+  font off; print "    list    "; font on;
+  print "- List the resources currently loaded into Gblorb's resource
+         tables^";
+  font off; print "    create  "; font on;
+  print "- Create a Blorb file from the resources loaded into tables^";
+  font off; print "    extract "; font on;
+  print "- Extract resources loaded into tables from a Blorb file^^";
+  font off; print "    intro   "; font on;
+  print "- Print a brief introduction to Blorb and Gblorb^";
+  font off; print "    about   "; font on;
+  print "- Print instructions for using Gblorb^";
+  font off; print "    notes   "; font on;
+  print "- Print notes on Gblorb limitations and bugs^";
+  font off; print "    help    "; font on;
+  print "- Print this help text^^";
+  font off; print "    quit    "; font on;
+  print "- Exit the program^^";
+];
+
+[ intro;
+  print "^Blorb files are a way to package IF games and their associated
+         resources into a single file. A ~resource~ in this case is usually
+         either a picture or a sound effect. The game file itself can also be
+         considered to be a resource. By bundling your game and its pictures
+         and sounds into a single file, you make it much easier to distribute
+         the game -- instead of multiple files, your game is now held in just
+         one file.^^";
+
+  print "Of course, this really only makes sense if game interpreters exist
+         that can play games directly from Blorb files. If you are reading
+         this, it's likely that you've already determined that a Blorb-aware
+         interpreter exists for the game system that you are using. Otherwise,
+         you should check this before going much further.^^";
+
+  print "Gblorb is a small program that lets you create Blorb files from your
+         game files and resources. It can also list the resources in a Blorb
+         file, and extract each into a separate disk file for you.^^";
+];
+
+[ about;
+  print "^To create a Blorb file with Gblorb, you first need to write a small
+         ~specification~ file that describes what files you want to include in
+         the Blorb file, and what the resource number is for each of them. The
+         specification file contains one line for each resource to build into
+         the Blorb file. The first item on the line is the resource number,
+         and everything after this is the name of the file that contains the
+         resource.^^";
+
+  print "For example, to build the three files ";
+  font off; print "mygame.ulx"; font on; print ", ";
+  font off; print "intro.jpg"; font on; print ", and ";
+  font off; print "gameover.jpg"; font on;
+  print " into a Blorb file, the specification file might look like:^^";
+
+  font off;
+  print "  0    mygame.ulx^  1    intro.jpg^  2    gameover.jpg^^";
+  font on;
+
+  print "This tells Gblorb to create a Blorb file with the executable game as
+         resource number 0, ";
+  font off; print "intro.jpg"; font on;
+  print " as resource number 1, and ";
+  font off; print "gameover.jpg"; font on;
+  print " as resource number 2. You can add comments to the file if you like
+         by starting lines with either ~!~ or ~#~. Gblorb ignores comments,
+         and also any blank lines, in the specification.^^";
+
+  print "To load this specification into Gblorb, use the ~load~ command. This
+         will ask you which file you want to read, then read it and list out
+         the resources table it built from reading the specification. Gblorb
+         will complain about any invalid lines in the file, or if it can't
+         find or read any of the files that contain the resources. Glulxe
+         interpreters vary in where they look for files to open, so to be sure
+         that Gblorb can read the resources files, you should keep them, the
+         specification file, and also your running copy of ";
+  font off; print "gblorb.ulx"; font on;
+  print " all together in the same directory. Gblorb determines the type of a
+         file by looking at the data in it, so the filename's extension is not
+         important -- files containing resources don't even need to have an
+         extension on their names.^^";
+
+  print "You can create both a picture and a sound resource having the same
+         resource number. You cannot however have two pictures with the same
+         resource number, even if one is JPEG and the other PNG. Similarly,
+         you cannot have more than one sound resource with the same resource
+         number. The Z-Machine treats sound resources 1 and 2 specially, so if
+         this is the game system you are working with, it's probably worth
+         avoiding these two for sounds. Resource numbers do not have to be
+         sequential, nor do they have to be specified in any particular order.
+         The important part is that they match the ones you use to access them
+         inside your game. The following specification would do just as well,
+         providing your game refers to the pictures by resource number 5678
+         and 1234:^^";
+
+  font off;
+  print "  0    mygame.ulx^  5678 intro.jpg^  1234 gameover.jpg^^";
+  font on;
+
+  print "One other note on specifying resources. The Blorb file format insists
+         that if you have an executable game in a Blorb file, that it must
+         have resource number 0. Also, you may only have at most one
+         executable game in a Blorb file. Gblorb will warn you if your
+         specification doesn't stick to this rule, but will let you create a
+         Blorb output file nevertheless, if you insist on doing this.^^";
+
+  print "To create a Blorb file from this specification, use the ~create~
+         command. This will ask you for a file to write to. Take care not to
+         accidentally overwrite your specification file.^^";
+
+  print "You can also list resources in an existing Blorb file, and extract
+         the resources back out to individual files if you wish. To load an
+         existing Blorb file, use ~load~ as before, but this time, when asked
+         which file you want to read, respond with the existing Blorb file.
+         Gblorb will notice that this is not a specification, and instead will
+         read the Blorb file to discover what resources it contains, and list
+         them.^^";
+
+  print "To extract files, use the ~extract~ command on a loaded Blorb
+         file. This will write executable games as ";
+  font off; print "STORYn"; font on; print ", pictures as ";
+  font off; print "PICn"; font on; print ", and sounds as ";
+  font off; print "SNDn"; font on;
+  print ". The ~n~ is the resource number. Gblorb cannot find the original
+         names of the files that were into the loaded Blorb file because
+         they're not recorded by the Blorb format, so it makes up these names
+         for extracted files. Gblorb will also save a list of the resources
+         it extracted, in the file ";
+  font off; print "SPEC"; font on;
+  print ".^^";
+
+  print "You can use the ~list~ command at any time to list the resources that
+         Gblorb found in the file you loaded. The ~help~ command lists valid
+         Gblorb commands, ~intro~ prints a brief introduction to Blorb and
+         Gblorb, and ~notes~ prints notes on Gblorb limitations and bugs. The
+         ~about~ command prints this set of instructions.^^";
+];
+
+[ notes;
+  print "^Gblorb supports up to ", get_table_capacity ()," resources. The
+         longest filename that it will use in a specification is ",
+         get_table_filename_length () - 2, " characters. Spaces are permitted
+         in filenames, but they may not work as expected, or even at all, on
+         all platforms. Resource numbers cannot exceed ", $7fffffff, ".^^";
+
+  print "Gblorb auto-detects and handles JPEG and PNG images, AIFF and MOD
+         sound files, and Glulx, Z-Machine, TADS 2, HUGO, ALAN, and (perhaps
+         pointlessly) Magnetic Scrolls executable games. It doesn't auto-detect
+         Scott Adams (~SAAI~) files, but should extract them from already built
+         Blorb files if it ever encounters any.^^";
+
+  print "The SONG file format is deprecated in version 2.0 of the Blorb
+         specification, and the OGG file format is new in version 2.0 and not
+         present in earlier versions. Gblorb will mention this if it finds
+         either in your resources specification. If using SONG, you should
+         probably consider changing format. If using OGG, you should ensure
+         that all the interpreters you intend to use support this format.^^";
+
+  print "Gblorb has no built in support for any of the Blorb optional chunks.
+         These are the color palette, the resolution control, sound looping
+         control, game identifier, and game release number. Its auto-detection
+         of most file types seems to be okay, though testing on a few of them
+         has been limited.^^";
+
+  print "Some Glk libraries may complain about attempts to open non-existent
+         files. This complaint is harmless, and can be safely ignored. It
+         occurs because of a small bug in the core Glk module gi_dispa.c, which
+         prevents Gblorb using the Glk test for a file's existence before
+         trying to open it.^^";
+
+  print "This is Gblorb serial number "; glk_put_buffer (54, 6);
+  print ". Please report bugs or misfeatures to ";
+  font off; print "simon_baldwin@@64yahoo.com"; font on; print ".^^";
+];
+
+
+!-----------------------------------------------------------------------------
+! Command interpreter loop.
+!-----------------------------------------------------------------------------
+
+Array c_load     string "load";
+Array c_list     string "list";
+Array c_create   string "create";
+Array c_extract  string "extract";
+Array c_intro    string "intro";
+Array c_about    string "about";
+Array c_help     string "help";
+Array c_notes    string "notes";
+Array c_quit     string "quit";
+Array c_empty    string "";
+
+[ command_is buf len command
+  i j;
+
+  i = 0;
+  while (i < len && buf->i == ' ')
+    i++;
+  for (j = 1: j <= command->0: i++, j++)
+    {
+      if (i == len || buf->i ~= command->j)
+        return false;
+    }
+  while (i < len && buf->i == ' ')
+    i++;
+  return (i == len);
+];
+
+Array cbuffer  -> COMMAND_BUFFER_LENGTH;
+Array event    --> 4;
+[ main_loop win
+  len;
+
+  glk_set_style (style_Header);
+  print "^Welcome to Gblorb.^^";
+  glk_set_style (style_Normal);
+  print "Type ~help~ for a list of Gblorb commands.^^";
+
+  do
+    {
+      print ">";
+      glk_request_line_event (win, cbuffer, COMMAND_BUFFER_LENGTH);
+
+      do
+        {
+          glk_select (event);
+        }
+      until (event-->0 == evtype_LineInput);
+
+      len = event-->2;
+      if (command_is (cbuffer, len, c_load))
+        {
+          if (load ()) {
+            list ();
+            check ();
+          }
+        }
+      else if (command_is (cbuffer, len, c_list))
+        {
+          list ();
+          check ();
+        }
+      else if (command_is (cbuffer, len, c_create))
+        {
+          build ();
+          check ();
+        }
+      else if (command_is (cbuffer, len, c_extract))
+        extract ();
+      else if (command_is (cbuffer, len, c_intro))
+        intro ();
+      else if (command_is (cbuffer, len, c_about))
+        about ();
+      else if (command_is (cbuffer, len, c_help))
+        help ();
+      else if (command_is (cbuffer, len, c_notes))
+        notes ();
+      else if (command_is (cbuffer, len, c_quit))
+        break;
+      else if (command_is (cbuffer, len, c_empty))
+        print "^";
+      else
+        print "Invalid command.^Try ~help~ for a list of Gblorb commands.^^";
+    }
+  until (false);
+
+  if (blorb_fileref ~= GLK_NULL)
+    glk_fileref_destroy (blorb_fileref);
+  blorb_fileref = GLK_NULL;
+];
+
+
+!-----------------------------------------------------------------------------
+! Main program.
+!-----------------------------------------------------------------------------
+
+[ main
+  win;
+
+  @setiosys 2 0;
+  win = glk_window_open (GLK_NULL, 0, 0, wintype_TextBuffer, 1);
+  if (win == GLK_NULL)
+    quit;
+
+  glk_set_window (win);
+
+  main_loop (win);
+];
