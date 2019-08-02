@@ -35,6 +35,8 @@
 Include "infglk.h";
 
 ! Assorted global constants and "tunables".
+! The GLK_NULL constant added for the modern Glk.
+Constant GLK_NULL               0;
 Constant MAX_TABLE_ENTRIES      1024;
 Constant FILENAME_LENGTH        40;
 Constant LINE_BUFFER_LENGTH     1024;
@@ -170,7 +172,8 @@ Array union --> 1;
 Array flush_event --> 4;
 [ force_flush;
 
-  if (glk_gestalt (gestalt_Timer))
+  ! The second parameter of the glk_gestalt() added for the modern Glk.
+  if (glk_gestalt (gestalt_Timer, 0))
     {
       glk_request_timer_events (SHORT_TIMEOUT);
       do
@@ -1445,7 +1448,9 @@ Array event    --> 4;
   do
     {
       print ">";
-      glk_request_line_event (win, cbuffer, COMMAND_BUFFER_LENGTH);
+      ! The fourth parameter of the glk_request_line_event()
+      ! added for the modern Glk.
+      glk_request_line_event (win, cbuffer, COMMAND_BUFFER_LENGTH, 0);
 
       do
         {
