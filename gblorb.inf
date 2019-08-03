@@ -1,6 +1,7 @@
 ! vi: set ts=2 shiftwidth=2 expandtab:
 !
 ! Copyright (c) 2003-2006  Simon Baldwin
+! Copyright (C) 2019 Nikita Tseykovets <tseikovets@rambler.ru>
 !
 !  This program is free software; you can redistribute it and/or modify
 !  it under the terms of the GNU General Public License as published by
@@ -31,6 +32,9 @@
 !
 ! 2006/03/01 - Updated for the Blorb 2.0 specification; added OGG file support,
 !              and a warning about SONG deprecation.
+!
+! 2019/08/03 - Fork by Nikita Tseykovets: interface translation into Russian
+!              and code adaptation for the modern version of the Glk.
 
 Include "infglk.h";
 
@@ -409,7 +413,7 @@ Constant SND_CATEGORY       2;
 
 [ line_error msg linenum line len;
 
-  print "    Error: ", (string) msg, ", at line ", linenum, ": ";
+  print "    Ошибка: ", (string) msg, ", на строке ", linenum, ": ";
   glk_put_buffer (line, len);
   print "^";
 ];
@@ -419,7 +423,7 @@ Array spec_filename  -> FILENAME_LENGTH;
 [ load_spec stream
   len line linenum i resource category type size status errors;
 
-  print "Loading the resources table from a specification file...^";
+  print "Загрузка таблицы ресурсов из файла спецификации...^";
   force_flush ();
 
   linenum = 0;
@@ -445,7 +449,7 @@ Array spec_filename  -> FILENAME_LENGTH;
       resource = read_spec_resource (line, len);
       if (resource == -1)
         {
-          line_error ("invalid or missing resource", linenum, line, len);
+          line_error ("неверный или отсутствующий ресурс", linenum, line, len);
           errors++;
           continue;
         }
@@ -453,7 +457,7 @@ Array spec_filename  -> FILENAME_LENGTH;
       status = read_spec_filename (line, len, spec_filename);
       if (~~status)
         {
-          line_error ("invalid or missing filename", linenum, line, len);
+          line_error ("неверное или отсутствующее имя файла", linenum, line, len);
           errors++;
           continue;
         }
@@ -464,11 +468,11 @@ Array spec_filename  -> FILENAME_LENGTH;
           switch (type)
             {
             FILEREF_ERROR:
-              line_error ("unable to access file", linenum, line, len);
+              line_error ("невозможно получить доступ к файлу", linenum, line, len);
             STREAM_ERROR:
-              line_error ("unable to open file",  linenum, line, len);
+              line_error ("невозможно открыть файл",  linenum, line, len);
             UNKNOWN_RESOURCE:
-              line_error ("file is unknown type",  linenum, line, len);
+              line_error ("файл неизвестного типа",  linenum, line, len);
             }
           errors++;
           continue;
@@ -481,7 +485,7 @@ Array spec_filename  -> FILENAME_LENGTH;
           if (category == resource_category (get_table_type (i))
               && resource == get_table_resource (i))
             {
-              line_error ("resource already used", linenum, line, len);
+              line_error ("ресурс уже используется", linenum, line, len);
               errors++;
               break;
             }
@@ -491,7 +495,7 @@ Array spec_filename  -> FILENAME_LENGTH;
 
       if (table_is_full ())
         {
-          line_error ("resource table is full", linenum, line, len);
+          line_error ("таблица ресурсов заполнена", linenum, line, len);
           errors++;
           break;
         }
@@ -501,17 +505,17 @@ Array spec_filename  -> FILENAME_LENGTH;
     }
 
   if (table_is_empty ())
-    print "No resources were loaded into the table.";
+    print "Ресурсы не были загружены в таблицу.";
   else if (get_table_length () == 1)
-    print "Successfully loaded 1 resource into the table.";
+    print "В таблицу успешно загружен 1 ресурс.";
   else
-    print "Successfully loaded ", get_table_length (),
-          " resources into the table.";
+    print "В таблицу успешно загружено ", get_table_length (),
+          " ресурсов.";
 
   if (errors == 1)
-    print "  There were errors in 1 entry.";
+    print "  Были ошибки в 1 записи.";
   else if (errors > 1)
-    print "  There were errors in ", errors, " entries.";
+    print "  Были ошибки в ", errors, " записях.";
   print "^^";
 
   return ~~table_is_empty ();
@@ -643,14 +647,14 @@ Array blorb_filename  -> FILENAME_LENGTH;
 [ load_blorb stream
   offset entries entry resource position type size;
 
-  print "Loading the resources table from a Blorb file...^";
+  print "Загрузка таблицы ресурсов из файла Blorb...^";
   force_flush ();
 
   offset = 12;
   glk_stream_set_position (stream, offset, seekmode_Start);
   if (glk_stream_get_position (stream) ~= offset)
     {
-      print "    Error: can't read resources count.^";
+      print "    Ошибка: не могу прочитать количество ресурсов.^";
       return false;
     }
 
@@ -658,7 +662,7 @@ Array blorb_filename  -> FILENAME_LENGTH;
   if (ridxcheck->0 ~= blorb_ridx->1 && ridxcheck->1 ~= blorb_ridx->2
       && ridxcheck->2 ~= blorb_ridx->3 && ridxcheck->3 ~= blorb_ridx->4)
     {
-      print "    Error: can't find resources index.^";
+      print "    Ошибка: не могу найти индекс ресурсов.^";
       return false;
     }
 
@@ -666,15 +670,15 @@ Array blorb_filename  -> FILENAME_LENGTH;
   glk_stream_set_position (stream, offset, seekmode_Start);
   if (glk_stream_get_position (stream) ~= offset)
     {
-      print "    Error: can't read resources count.^";
+      print "    Ошибка: не могу прочитать количество ресурсов.^";
       return false;
     }
 
   entries = get_uint_stream (stream);
   if (entries > get_table_capacity ())
     {
-      print "    Error: resource table is too short, handling only the first ",
-            get_table_capacity (), " resources.^";
+      print "    Ошибка: таблица ресурсов слишком короткая, обрабатываются только первые ",
+            get_table_capacity (), " ресурсов.^";
       entries = get_table_capacity ();
     }
 
@@ -686,7 +690,7 @@ Array blorb_filename  -> FILENAME_LENGTH;
       glk_stream_set_position (stream, offset, seekmode_Start);
       if (glk_stream_get_position (stream) ~= offset)
         {
-          print "    Error: can't locate resource ", entry, " index entry.^";
+          print "    Ошибка: не могу найти ресурс с индексом записи ", entry, ".^";
           return false;
         }
 
@@ -697,7 +701,7 @@ Array blorb_filename  -> FILENAME_LENGTH;
       glk_stream_set_position (stream, offset, seekmode_Start);
       if (glk_stream_get_position (stream) ~= offset)
         {
-          print "    Error: can't locate resource ", entry, " data.^";
+          print "    Ошибка: не могу найти ресурс для данных ", entry, ".^";
           return false;
         }
 
@@ -714,12 +718,12 @@ Array blorb_filename  -> FILENAME_LENGTH;
     }
 
   if (table_is_empty ())
-    print "No resources were loaded into the table.^^";
+    print "Ресурсы не были загружены в таблицу.^^";
   else if (get_table_length () == 1)
-    print "Successfully loaded 1 resource into the table.^^";
+    print "В таблицу успешно загружен 1 ресурс.^^";
   else
-    print "Successfully loaded ", get_table_length (),
-          " resources into the table.^^";
+    print "В таблицу успешно загружено ", get_table_length (),
+          " ресурсов.^^";
 
   return true;
 ];
@@ -739,14 +743,14 @@ Array typecheck       -> 12;
                                           filemode_Read, 0);
   if (fileref == GLK_NULL)
     {
-      print "Not a valid file reference, sorry.^^";
+      print "Извините, неправильная ссылка на файл.^^";
       return false;
     }
   stream = glk_stream_open_file (fileref, filemode_Read, 0);
   if (stream == GLK_NULL)
     {
       glk_fileref_destroy (fileref);
-      print "Couldn't open this file, sorry.^^";
+      print "Извините, не удалось открыть этот файл.^^";
       return false;
     }
 
@@ -776,7 +780,7 @@ Array typecheck       -> 12;
       glk_fileref_destroy (clone);
       if (stream == GLK_NULL)
         {
-          print "Couldn't open this file, sorry.^^";
+          print "Извините, не удалось открыть этот файл.^^";
           return false;
         }
 
@@ -830,20 +834,20 @@ Array typecheck       -> 12;
     }
 
   if (stories == 0)
-    print "Warning: the table contains no executable game file.^^";
+    print "Предупреждение: таблица не содержит исполняемого файла игры.^^";
   else if (stories > 1)
-    print "Warning: the table contains more than one executable game file.^^";
+    print "Предупреждение: таблица содержит более одного исполняемого файла игры.^^";
   else if (stories == 1 && sresource ~= 0)
-    print "Warning: the executable game file must have resource number zero.^^";
+    print "Предупреждение: исполняемый файл игры должен иметь номер ресурса ноль.^^";
 
   if (zcode && sndwarn)
-    print "Warning: sound resources 1 and 2 are usually avoided for Z-Machine
-          games.^^";
+    print "Предупреждение: звуковые ресурсы 1 и 2, как правило, избегаются в
+          играх Z-Machine.^^";
 
   if (has_song)
-    print "Warning: SONG sound resources are deprecated in Blorb 2.0.^^";
+    print "Предупреждение: звуковые ресурсы SONG устарели в Blorb 2.0.^^";
   if (has_ogg)
-    print "Warning: OGG sound resources require Blorb 2.0 support.^^";
+    print "Предупреждение: для звуковых ресурсов OGG требуется поддержка Blorb 2.0.^^";
 ];
 
 [ list
@@ -851,14 +855,14 @@ Array typecheck       -> 12;
 
   if (table_is_empty ())
     {
-      print "The resources table is empty.^^";
+      print "Таблица ресурсов пуста.^^";
       return true;
     }
 
-  print "The resources table contains the following entries:^^";
+  print "Таблица ресурсов содержит следующие записи:^^";
   font off;
-  print "  Usage  Resource  Type     Length  Filename^";
-  print "  -----  --------  ----     ------  --------^";
+  print "  Вид   Ресурс    Тип      Длина   Имя файла^";
+  print "  ---   ------    ---      -----   ---------^";
   for (entry = get_table_start (): more_table_entries (entry):
        entry = next_table_entry (entry))
     {
@@ -872,7 +876,7 @@ Array typecheck       -> 12;
         SND_CATEGORY:  print "SND ";
         default:       print "UNKN";
         }
-      print " ";
+      !print " ";
 
       resource = get_table_resource (entry);
       if (resource < 10)              print "         ";
@@ -997,14 +1001,14 @@ Array copy_buffer  -> COPY_BUFFER_LENGTH;
 
   if (table_is_empty ())
     {
-      print "The resources table is empty.^^";
+      print "Таблица ресурсов пуста.^^";
       return false;
     }
   if (blorb_fileref ~= GLK_NULL)
     {
-      print "The resources table was created by reading in a Blorb file. You
-             can only create new Blorb files when the resources table is read
-             from a specification file.^^";
+      print "Таблица ресурсов была создана путём чтения из файла Blorb. Вы
+             можете создавать новые файлы Blorb только тогда, когда таблица
+             ресурсов считывается из файла спецификации.^^";
       return false;
     }
 
@@ -1012,18 +1016,18 @@ Array copy_buffer  -> COPY_BUFFER_LENGTH;
                                           filemode_Write, 0);
   if (fileref == GLK_NULL)
     {
-      print "Not a valid file reference, sorry.^^";
+      print "Извините, неправильная ссылка на файл.^^";
       return false;
     }
   stream = glk_stream_open_file (fileref, filemode_Write, 0);
   glk_fileref_destroy (fileref);
   if (stream == GLK_NULL)
     {
-      print "Couldn't open the Blorb file, sorry.^^";
+      print "Извините, не могу открыть файл Blorb.^^";
       return false;
     }
 
-  print "Writing the Blorb output file...^";
+  print "Запись выходного файла Blorb...^";
   force_flush ();
 
   total = 0;
@@ -1052,7 +1056,7 @@ Array copy_buffer  -> COPY_BUFFER_LENGTH;
         SND_CATEGORY:  glk_put_string_stream (stream, blorb_snd);
         EXEC_CATEGORY: glk_put_string_stream (stream, blorb_exec);
         default:
-          print "FATAL: unexpected resource type.^";
+          print "Фатально: неожиданный тип ресурса.^";
           break;
         }
 
@@ -1085,7 +1089,7 @@ Array copy_buffer  -> COPY_BUFFER_LENGTH;
         SAAI_RESOURCE: glk_put_string_stream (stream, blorb_saai);
 
         default:
-          print "FATAL: unexpected resource type.^";
+          print "Фатально: неожиданный тип ресурса.^";
           break;
         }
 
@@ -1096,9 +1100,9 @@ Array copy_buffer  -> COPY_BUFFER_LENGTH;
       length = archive_file (stream, filename);
       if (length == -1)
         {
-          print "FATAL: error opening file ";
+          print "Фатально: ошибка при открытии файла ";
           glk_put_string (filename);
-          print ", Blorb output file will be corrupt.^";
+          print ", выходной файл Blorb будет повреждён.^";
         }
 
       if (size % 2)
@@ -1108,7 +1112,7 @@ Array copy_buffer  -> COPY_BUFFER_LENGTH;
   total = glk_stream_get_position (stream);
   glk_stream_close (stream, GLK_NULL);
 
-  print "Successfully wrote ", total, " bytes to the output Blorb file.^^";
+  print "Успешно записано ", total, " байтов в выходной файл Blorb.^^";
   return true;
 ];
 
@@ -1161,25 +1165,25 @@ Array resbuf    -> 10;
 
   if (table_is_empty ())
     {
-      print "The resources table is empty.^^";
+      print "Таблица ресурсов пуста.^^";
       return false;
     }
   if (blorb_fileref == GLK_NULL)
     {
-      print "The resources table was created by reading in a specification file.
-             You can only extract resources from a Blorb file when the
-             resources table is read from that file.^^";
+      print "Таблица ресурсов была создана путём чтения из файла спецификации.
+             Вы можете извлечь ресурсы из файла Blorb только тогда,
+             когда таблица ресурсов будет считана из этого файла.^^";
       return false;
     }
 
   stream = glk_stream_open_file (blorb_fileref, filemode_Read, 0);
   if (stream == GLK_NULL)
     {
-      print "Couldn't open the Blorb file, sorry.^^";
+      print "Извините, не могу открыть файл Blorb.^^";
       return false;
     }
 
-  print "Extracting resources from the Blorb output file...^";
+  print "Извлечение ресурсов из выходного файла Blorb...^";
   force_flush ();
 
   count = 0;
@@ -1193,7 +1197,7 @@ Array resbuf    -> 10;
       length = extract_file (stream, position + 8, size, filename);
       if (length == -1)
         {
-          print "    Error: can't open or write to file ";
+          print "    Ошибка: не могу открыть или записать в файл ";
           glk_put_string_stream (filename);
           print "^";
           continue;
@@ -1207,12 +1211,12 @@ Array resbuf    -> 10;
   status = save_spec ();
 
   if (count == 1)
-    print "Successfully created 1 resource file";
+    print "Успешно создан 1 файл ресурса";
   else
-    print "Successfully created ", count, " resource files";
+    print "Успешно создано ", count, " файлов ресурсов";
 
   if (status)
-    print ", and a specification file";
+    print " и файл спецификации";
 
   print ".^^";
 
@@ -1225,182 +1229,195 @@ Array resbuf    -> 10;
 !-----------------------------------------------------------------------------
 
 [ help;
-  print "Gblorb understands the following commands:^^";
+  print "Gblorb понимает следующие команды:^^";
   font off; print "    load    "; font on;
-  print "- Load a specification file or a Blorb file into Gblorb's
-         resource tables^";
+  print "- Загрузить файл спецификации или файл Blorb в таблицы
+          ресурсов Gblorb^";
   font off; print "    list    "; font on;
-  print "- List the resources currently loaded into Gblorb's resource
-         tables^";
+  print "- Список ресурсов, загруженных в настоящее время в таблицы
+         ресурсов Gblorb^";
   font off; print "    create  "; font on;
-  print "- Create a Blorb file from the resources loaded into tables^";
+  print "- Создать файл Blorb из ресурсов, загруженных в таблицы^";
   font off; print "    extract "; font on;
-  print "- Extract resources loaded into tables from a Blorb file^^";
+  print "- Извлечь ресурсы, загруженные в таблицы из файла Blorb^^";
   font off; print "    intro   "; font on;
-  print "- Print a brief introduction to Blorb and Gblorb^";
+  print "- Вывести краткое введение в Blorb и Gblorb^";
   font off; print "    about   "; font on;
-  print "- Print instructions for using Gblorb^";
+  print "- Вывести инструкцию по использованию Gblorb^";
   font off; print "    notes   "; font on;
-  print "- Print notes on Gblorb limitations and bugs^";
+  print "- Вывести примечания об ограничениях и багах Gblorb^";
   font off; print "    help    "; font on;
-  print "- Print this help text^^";
+  print "- Вывести текст этой справки^^";
   font off; print "    quit    "; font on;
-  print "- Exit the program^^";
+  print "- Выйти из программы^^";
 ];
 
 [ intro;
-  print "^Blorb files are a way to package IF games and their associated
-         resources into a single file. A ~resource~ in this case is usually
-         either a picture or a sound effect. The game file itself can also be
-         considered to be a resource. By bundling your game and its pictures
-         and sounds into a single file, you make it much easier to distribute
-         the game -- instead of multiple files, your game is now held in just
-         one file.^^";
+  print "^Файлы Blorb -- это способ упаковки ИЛ-игр и связанных с ними
+         ресурсов в один файл. ~Ресурс~ в этом случае обычно представляет собой
+         изображение или звуковой эффект. Сам файл игры также можно
+         считать ресурсом. Объединяя вашу игру, её изображения
+         и звуки в один файл, вы значительно облегчаете распространение
+         игры -- вместо нескольких файлов ваша игра теперь хранится в
+         одном файле.^^";
 
-  print "Of course, this really only makes sense if game interpreters exist
-         that can play games directly from Blorb files. If you are reading
-         this, it's likely that you've already determined that a Blorb-aware
-         interpreter exists for the game system that you are using. Otherwise,
-         you should check this before going much further.^^";
+  print "Конечно, это имеет реальный смысл, только если существуют игровые
+         интерпретаторы, которые могут воспроизводить игры непосредственно из
+         файлов Blorb. Если вы это читаете, то, вероятно, уже определили, что
+         для используемой вами игровой системы существует интерпретатор с
+         поддержкой Blorb. В противном случае, вам следует проверить это, 
+         прежде чем предпринимать дальнейшие шаги.^^";
 
-  print "Gblorb is a small program that lets you create Blorb files from your
-         game files and resources. It can also list the resources in a Blorb
-         file, and extract each into a separate disk file for you.^^";
+  print "Gblorb -- это небольшая программа, которая позволяет создавать файлы
+         Blorb из ваших файлов и ресурсов игры. Она также может отобразить
+         для вас ресурсы в файле Blorb и извлечь каждый из них в отдельный
+         файл на диске.^^";
 ];
 
 [ about;
-  print "^To create a Blorb file with Gblorb, you first need to write a small
-         ~specification~ file that describes what files you want to include in
-         the Blorb file, and what the resource number is for each of them. The
-         specification file contains one line for each resource to build into
-         the Blorb file. The first item on the line is the resource number,
-         and everything after this is the name of the file that contains the
-         resource.^^";
+  print "^Чтобы создать файл Blorb с помощью Gblorb, сначала нужно написать
+         небольшой файл ~спецификации~, который описывает, какие файлы вы 
+         хотите включить в файл Blorb и какой номер ресурса у каждого из них.
+         Файл спецификации содержит одну строку для каждого ресурса, который
+         нужно встроить в файл Blorb. Первый элемент в строке -- это номер
+         ресурса, а всё, что после этого, -- это имя файла, в котором находится
+         ресурс.^^";
 
-  print "For example, to build the three files ";
+  print "Например, для включения трёх файлов ";
   font off; print "mygame.ulx"; font on; print ", ";
-  font off; print "intro.jpg"; font on; print ", and ";
+  font off; print "intro.jpg"; font on; print " и ";
   font off; print "gameover.jpg"; font on;
-  print " into a Blorb file, the specification file might look like:^^";
+  print " в  файл Blorb, файл спецификации может выглядеть так:^^";
 
   font off;
   print "  0    mygame.ulx^  1    intro.jpg^  2    gameover.jpg^^";
   font on;
 
-  print "This tells Gblorb to create a Blorb file with the executable game as
-         resource number 0, ";
+  print "Это говорит Gblorb создать файл Blorb с исполняемым файлом игры
+         в качестве ресурса номер 0, ";
   font off; print "intro.jpg"; font on;
-  print " as resource number 1, and ";
+  print " в качестве ресурса номер 1 и ";
   font off; print "gameover.jpg"; font on;
-  print " as resource number 2. You can add comments to the file if you like
-         by starting lines with either ~!~ or ~#~. Gblorb ignores comments,
-         and also any blank lines, in the specification.^^";
+  print " в качестве ресурса номер 2. Вы можете добавлять комментарии к файлу,
+         начиная строки с ~!~ или ~#~, как вам больше нравится. Gblorb
+         игнорирует комментарии, а также любые пустые строки в спецификации.^^";
 
-  print "To load this specification into Gblorb, use the ~load~ command. This
-         will ask you which file you want to read, then read it and list out
-         the resources table it built from reading the specification. Gblorb
-         will complain about any invalid lines in the file, or if it can't
-         find or read any of the files that contain the resources. Glulxe
-         interpreters vary in where they look for files to open, so to be sure
-         that Gblorb can read the resources files, you should keep them, the
-         specification file, and also your running copy of ";
+  print "Чтобы загрузить эту спецификацию в Gblorb, используйте команду ~load~.
+         Он выдаст запрос, какой файл вы хотите прочитать, затем прочитает его
+         и отобразит таблицу ресурсов, которую построит в результате чтения
+         спецификации. Gblorb будет жаловаться на любые недопустимые строки в
+         файле или если он не сможет найти или прочитать какие-либо файлы,
+         содержащие ресурсы. Интерпретаторы Glulxe различаются в том, где они
+         ищут файлы для открытия, поэтому, чтобы быть уверенным, что Gblorb
+         может читать файлы ресурсов, вам следует держать их, файл
+         спецификации, а также запущенную копию ";
   font off; print "gblorb.ulx"; font on;
-  print " all together in the same directory. Gblorb determines the type of a
-         file by looking at the data in it, so the filename's extension is not
-         important -- files containing resources don't even need to have an
-         extension on their names.^^";
+  print " все вместе в одной директории. Gblorb определяет тип
+         файла, просматривая данные внутри него, поэтому расширение имени файла
+         не имеет значения -- файлы, содержащие ресурсы, даже не обязаны иметь
+         расширения в своих именах.^^";
 
-  print "You can create both a picture and a sound resource having the same
-         resource number. You cannot however have two pictures with the same
-         resource number, even if one is JPEG and the other PNG. Similarly,
-         you cannot have more than one sound resource with the same resource
-         number. The Z-Machine treats sound resources 1 and 2 specially, so if
-         this is the game system you are working with, it's probably worth
-         avoiding these two for sounds. Resource numbers do not have to be
-         sequential, nor do they have to be specified in any particular order.
-         The important part is that they match the ones you use to access them
-         inside your game. The following specification would do just as well,
-         providing your game refers to the pictures by resource number 5678
-         and 1234:^^";
+  print "Вы можете создать как графический, так и звуковой ресурс с одинаковым
+         номером ресурса. Однако вы не можете иметь два изображения с одним и
+         тем же номером ресурса, даже если одно -- JPEG, а другое -- PNG.
+         Точно так же вы не можете иметь более одного звукового ресурса с
+         одинаковым номером ресурса. Z-Machine обрабатывает звуковые ресурсы
+         1 и 2 особым образом, поэтому, если вы работаете с этой игровой
+         системой, вероятно, стоит избегать этих двух звуков. Номера ресурсов
+         не обязаны быть последовательными и не обязаны указываться в
+         каком-либо определённом порядке. Важной частью является то, что они
+         совпадают с теми, которые вы используете для доступа к ним в вашей
+         игре. Следующая спецификация будет работать точно так же, при условии,
+         что ваша игра ссылается на картинки по номерам ресурсов 5678
+         и 1234:^^";
 
   font off;
   print "  0    mygame.ulx^  5678 intro.jpg^  1234 gameover.jpg^^";
   font on;
 
-  print "One other note on specifying resources. The Blorb file format insists
-         that if you have an executable game in a Blorb file, that it must
-         have resource number 0. Also, you may only have at most one
-         executable game in a Blorb file. Gblorb will warn you if your
-         specification doesn't stick to this rule, but will let you create a
-         Blorb output file nevertheless, if you insist on doing this.^^";
+  print "Ещё одно замечание об указании ресурсов. Формат файла Blorb настаивает
+         на том, что, если у вас есть исполняемый файл игры в файле Blorb, он
+         должен иметь номер ресурса 0. Кроме того, в файле Blorb может быть
+         только один исполняемый файл игры. Gblorb предупредит вас, если ваша
+         спецификация не соответствует этому правилу, но, тем не менее, позволит
+         вам создать выходной файл Blorb, если вы будете на этом настаивать.^^";
 
-  print "To create a Blorb file from this specification, use the ~create~
-         command. This will ask you for a file to write to. Take care not to
-         accidentally overwrite your specification file.^^";
+  print "Чтобы создать файл Blorb из этой спецификации, используйте команду
+         ~create~. Она запросит у вас файл для записи. Будьте осторожны, чтобы
+         случайно не перезаписать файл спецификации.^^";
 
-  print "You can also list resources in an existing Blorb file, and extract
-         the resources back out to individual files if you wish. To load an
-         existing Blorb file, use ~load~ as before, but this time, when asked
-         which file you want to read, respond with the existing Blorb file.
-         Gblorb will notice that this is not a specification, and instead will
-         read the Blorb file to discover what resources it contains, and list
-         them.^^";
+  print "Вы также можете отобразить ресурсы в существующем файле Blorb и извлечь
+         их обратно в отдельные файлы, если пожелаете. Чтобы загрузить
+         существующий файл Blorb, используйте ~load~, как и раньше, но на этот
+         раз, в ответ на запрос, какой файл вы хотите прочитать, укажите
+         существующий файл Blorb. Gblorb заметит, что это не спецификация,
+         и вместо этого прочитает файл как Blorb, чтобы выяснить, какие ресурсы
+         он содержит, и отобразит их.^^";
 
-  print "To extract files, use the ~extract~ command on a loaded Blorb
-         file. This will write executable games as ";
-  font off; print "STORYn"; font on; print ", pictures as ";
-  font off; print "PICn"; font on; print ", and sounds as ";
+  print "Чтобы извлечь файлы, используйте команду ~extract~ при загруженном
+         файле Blorb. При этом исполняемые файлы игр будут записываться как ";
+  font off; print "STORYn"; font on; print ", изображения -- как ";
+  font off; print "PICn"; font on; print ", а звуки как ";
   font off; print "SNDn"; font on;
-  print ". The ~n~ is the resource number. Gblorb cannot find the original
-         names of the files that were into the loaded Blorb file because
-         they're not recorded by the Blorb format, so it makes up these names
-         for extracted files. Gblorb will also save a list of the resources
-         it extracted, in the file ";
+  print ", где ~n~ -- номер ресурса. Gblorb не может найти исходные
+         имена файлов, которые были в загруженном файле Blorb, так как
+         они не записаны в формате Blorb, поэтому он генерирует эти имена
+         для извлекаемых файлов. Gblorb также сохраняет список ресурсов,
+         которые он извлёк, в файл ";
   font off; print "SPEC"; font on;
   print ".^^";
 
-  print "You can use the ~list~ command at any time to list the resources that
-         Gblorb found in the file you loaded. The ~help~ command lists valid
-         Gblorb commands, ~intro~ prints a brief introduction to Blorb and
-         Gblorb, and ~notes~ prints notes on Gblorb limitations and bugs. The
-         ~about~ command prints this set of instructions.^^";
+  print "Вы можете в любое время использовать команду ~list~, чтобы просмотреть
+         список ресурсов, найденных Gblorb в загруженном вами файле. Команда
+         ~help~ отображает список допустимых команд Gblorb, ~intro~ выводит
+         краткое введение в Blorb и Gblorb, а ~notes~ выводит примечания об
+         ограничениях и багах Gblorb. Команда ~about~ выводит
+         этот набор инструкций.^^";
 ];
 
 [ notes;
-  print "^Gblorb supports up to ", get_table_capacity ()," resources. The
-         longest filename that it will use in a specification is ",
-         get_table_filename_length () - 2, " characters. Spaces are permitted
-         in filenames, but they may not work as expected, or even at all, on
-         all platforms. Resource numbers cannot exceed ", $7fffffff, ".^^";
+  print "^Gblorb поддерживает до ", get_table_capacity ()," ресурсов. Самое
+         длинное имя файла, которое он будет использовать в спецификации,
+         составляет ", get_table_filename_length () - 2, " символов. В именах
+         файлов допускаются пробелы, но они могут работать не так, как
+         ожидается, или вообще не работать на всех платформах. Номера ресурсов
+         не могут превышать ", $7fffffff, ".^^";
 
-  print "Gblorb auto-detects and handles JPEG and PNG images, AIFF and MOD
-         sound files, and Glulx, Z-Machine, TADS 2, HUGO, ALAN, and (perhaps
-         pointlessly) Magnetic Scrolls executable games. It doesn't auto-detect
-         Scott Adams (~SAAI~) files, but should extract them from already built
-         Blorb files if it ever encounters any.^^";
+  print "Gblorb автоматически обнаруживает и обрабатывает изображения JPEG и
+         PNG, звуковые файлы AIFF и MOD, а также исполняемые файлы игр Glulx,
+         Z-Machine, TADS 2, HUGO, ALAN и (возможно, бессмысленно) Magnetic
+         Scrolls. Он не обнаруживает автоматически файлы Scott Adams (~SAAI~),
+         но должен извлекать их из уже созданных файлов Blorb,
+         если когда-нибудь с ними столкнётся.^^";
 
-  print "The SONG file format is deprecated in version 2.0 of the Blorb
-         specification, and the OGG file format is new in version 2.0 and not
-         present in earlier versions. Gblorb will mention this if it finds
-         either in your resources specification. If using SONG, you should
-         probably consider changing format. If using OGG, you should ensure
-         that all the interpreters you intend to use support this format.^^";
+  print "Формат файла SONG устарел в версии 2.0 спецификации
+         Blorb, а формат файла OGG является нововведением версии 2.0 и
+         отсутствует в более ранних версиях. Gblorb упомянет об этом, если
+         найдёт их в спецификации ресурсов. Если вы используете SONG, вам
+         следует подумать об изменении формата. При использовании OGG вам
+         следует убедиться, что все интерпретаторы, которые вы собираетесь
+         использовать, поддерживают этот формат.^^";
 
-  print "Gblorb has no built in support for any of the Blorb optional chunks.
-         These are the color palette, the resolution control, sound looping
-         control, game identifier, and game release number. Its auto-detection
-         of most file types seems to be okay, though testing on a few of them
-         has been limited.^^";
+  print "Gblorb не имеет встроенной поддержки для каких-либо дополнительных
+         блоков Blorb. В частности, таких как цветовая палитра, управление
+         разрешением, управление зацикливанием звука, идентификатор игры и
+         номер выпуска игры. Его автоматическое обнаружение большинства типов
+         файлов, кажется, в порядке, хотя тестирование некоторых из них
+         было ограниченным.^^";
 
-  print "Some Glk libraries may complain about attempts to open non-existent
-         files. This complaint is harmless, and can be safely ignored. It
-         occurs because of a small bug in the core Glk module gi_dispa.c, which
-         prevents Gblorb using the Glk test for a file's existence before
-         trying to open it.^^";
+  print "Некоторые библиотеки Glk могут жаловаться на попытки открыть
+         несуществующие файлы. Эта жалоба безвредна и может быть безопасно
+         проигнорирована. Это происходит из-за небольшого бага в основном
+         модуле Glk gi_dispa.c, который не позволяет Gblorb использовать тест
+         Glk для проверки существования файла, прежде чем
+         пытаться открыть его.^^";
 
-  print "This is Gblorb serial number "; glk_put_buffer (54, 6);
-  print ". Please report bugs or misfeatures to ";
-  font off; print "simon_baldwin@@64yahoo.com"; font on; print ".^^";
+  print "Это Gblorb serial number 060301 (русификация serial number ",
+         glk_put_buffer (54, 6), "). Пожалуйста, сообщайте о багах и
+         неправильностях в работе Саймону Болдуину (Simon Baldwin) на ";
+  font off; print "simon_baldwin@@64yahoo.com"; font on;
+  print ", а о проблемах русификации Никите Цейковцу на ";
+  font off; print "tseikovets@@64rambler.ru"; font on; print ".^^";
 ];
 
 
@@ -1441,9 +1458,9 @@ Array event    --> 4;
   len;
 
   glk_set_style (style_Header);
-  print "^Welcome to Gblorb.^^";
+  print "^Добро пожаловать в Gblorb.^^";
   glk_set_style (style_Normal);
-  print "Type ~help~ for a list of Gblorb commands.^^";
+  print "Введите ~ help ~ для просмотра списка команд Gblorb.^^";
 
   do
     {
@@ -1491,7 +1508,7 @@ Array event    --> 4;
       else if (command_is (cbuffer, len, c_empty))
         print "^";
       else
-        print "Invalid command.^Try ~help~ for a list of Gblorb commands.^^";
+        print "Неверная команда.^Попробуйте ~ help ~ для просмотра списка команд Gblorb.^^";
     }
   until (false);
 
